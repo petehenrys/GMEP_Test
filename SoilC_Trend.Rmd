@@ -1,0 +1,246 @@
+---
+title: "GMEP Portal Example"
+author: "Pete Henrys"
+date: "25 April 2016"
+output: html_document
+params:
+  pwdCS:  "Provide_MASQ_password"
+  pwdGMEP:  "Provide_GMEP_password"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+![](gmep-header-logo-en.png)
+
+# What is the long term trend for soil carbon?
+
+### [Introduction](#intro)
+### [Evidence](#ev)
+### [Data](#data)
+### [Method](#meth)
+### [Trade-offs & Co-benefits](#coben)
+
+# Introduction {#intro}
+
+Soil organic carbon (SOC) is important for maintaining the structure and function of soils. It is involved in nutrient retention and cycling whilst enhancing soil physical structure, helping soils to retain water (reducing flood risk) and allowing improved root growth (enhancing food production). Moreover, it is an important store of carbon, which needs to be protected to avoid it being emitted to the atmosphere as carbon dioxide. A healthy soil may even accumulate more carbon over time, locking up atmospheric carbon dioxide and contributing to climate change mitigation.  
+
+Under the Kyoto Protocol the UK is required to make estimates of net carbon emissions to the atmosphere, including emissions and removals by soils linked to land-use. However, knowledge of soil carbon stocks and changes is limited; previous work from the National Soil Resources Institute and partners suggested that soils in England and Wales were losing carbon due to climate change, but this has been contested by subsequent studies based on more comprehensive soils data which suggest that the soil carbon stocks have remained stable.
+
+# Evidence {#ev}
+The reported results are split into two groups, those representing the Wider Wales part of the survey and those that represent the Targeted part of the survey. The Wider Wales sampling is joined to the Countryside Survey long-term monitoring by the dashed line, and provides a baseline against which change can be assessed. The targeted sampling contains areas that are prioritised in Glastir for targeted interventions. The results presented here serve as a check to see if the samples in the targeted squares differ from Wider Wales.
+
+The graph shows the GMEP data for carbon concentration for 2013 compared with data collected since 1978 by the Countryside Survey. The results for Wider Wales sampling, show that no significant change in soil carbon concentration has occurred between the last Countryside Survey sampling in 2007 and GMEP in 2013. The red square shows the Targeted sampling mean carbon concentration lying above the Wider Wales value; these squares are monitored specifically for soil carbon and pollution. The fact they lie above indicates they are being targeted correctly. 
+
+For interpretation of the scale, soil type based on soil organic matter content is defined as mineral soil (0-44 g C kg^-1^), humus-mineral (44-165 g C kg^-1^ ), organo-mineral (165-330 g C kg^-1^) and organic soil (330-550 g C kg^-1^), the maximum carbon content is 550 g C kg^-1^.
+ 
+```{r C_trend, echo=FALSE, message=FALSE, warning=FALSE, results="hide"}
+
+library(RODBC)
+library(shapefiles)
+library(nlme)
+library(multcomp)
+
+## set the channel to the CS soils databse to pull out the required CS data first
+channel <- odbcConnect("MWA",uid="masq",case="nochange",pwd=params$pwdCS)
+
+
+## pull off the 78, 98 and 07 data seperately with just the variable of interest (ph) and the
+##    square number, country, broad habitat, repeat plot id and habitat * country intersection
+
+CS_Soil_78 <- sqlQuery(channel,"select REP_PLOT,
+                                SERIES_NUM,
+                                COUNTRY_CODE,
+                                BROAD_HABITAT,
+                                BH_COUNTRY,
+                                C_CONC_78_LOI as C_CONC
+                            from DB_MASQ.CS_SOILS_TIER_4_DATA
+                            order by SERIES_NUM
+                            ")
+## add an additional column to specify the year for when the data sets are appended.
+CS_Soil_78$year = 1978                            
+CS_Soil_98 <- sqlQuery(channel,"select REP_PLOT,
+                                SERIES_NUM,
+                                COUNTRY_CODE,
+                                BROAD_HABITAT,
+                                BH_COUNTRY,
+                                C_CONC_98_LOI as C_CONC
+                            from DB_MASQ.CS_SOILS_TIER_4_DATA
+                            order by SERIES_NUM
+                            ")
+CS_Soil_98$year = 1998  
+CS_Soil_07 <- sqlQuery(channel,"select REP_PLOT,
+                                SERIES_NUM,
+                                COUNTRY_CODE,
+                                BROAD_HABITAT,
+                                BH_COUNTRY,
+                                C_CONC_07_LOI as C_CONC
+                            from DB_MASQ.CS_SOILS_TIER_4_DATA
+                            order by SERIES_NUM
+                            ")
+CS_Soil_07$year = 2007  
+
+##append dtaa from the different years together into one table
+CS_Soil <- rbind(CS_Soil_78,CS_Soil_98,CS_Soil_07)
+
+## remove any rows that have an NA value for the response (ph)
+rem_na <- which(is.na(CS_Soil$C_CONC))
+CS_Soil <- CS_Soil[-rem_na,]
+
+## as this analysis is not concerned with habitat, remove any duplicated repeat plots occurring within the same year
+dup_id <- which(duplicated(paste(CS_Soil$REP_PLOT,CS_Soil$year)))
+CS_Soil <- CS_Soil[-dup_id,]
+
+##save a full GB dataset for later comparison
+CSGB_Soil <- CS_Soil
+
+## select out just the Welsh data
+CS_Soil <- CS_Soil[CS_Soil$COUNTRY_CODE=="WAL",]
+
+#label the dataset as coming from the CS survey
+CS_Soil$Survey <- "CS"
+
+
+##clost the dataabse connection as all data has been retrieved
+odbcClose(channel)
+
+#########################
+
+### add in GMEP data here
+
+gmep_channel <- odbcConnect("ladb.nerc-lancaster.ac.uk/tbb",uid="AXISII_WP3_VIEWER",case="nochange",pwd=params$pwdGMEP)
+
+GMEP_Soil <- sqlQuery(gmep_channel,"select REP_ID,
+                                      SQNUM as SERIES_NUM,
+									  YEAR as year,
+                                      C_FE_CARBO_CONC_GPERKG as C_CONC
+                                  from GMEP_DERIVED.WP8_SOILMETRICS
+                                  order by SERIES_NUM
+                                  ")
+
+GMEP_Soil$REP_PLOT=GMEP_Soil$REP_ID
+
+
+
+#label the dataset as coming from the GMEP survey
+GMEP_Soil$Survey <- "GMEP"
+GMEP_Soil$year <- GMEP_Soil$YEAR
+
+##combine all years to give a complete set of chosen squares
+all_sqs = (read.shapefile("C://GMEP_Temp//AllSelectedSquares"))$dbf$dbf
+
+##########################
+
+plotdat=(read.dbf("C://GMEP_Temp//VEG_PLOTS_PLOT_DATA.dbf"))$dbf
+GMEP_Soil$BROAD_HABITAT=NA
+idx=match(GMEP_Soil$REP_ID,plotdat$REP_ID)
+GMEP_Soil$BROAD_HABITAT[which(!is.na(idx))]=(plotdat$XU_BROAD_H[idx[which(!is.na(idx))]])+1
+
+##########################
+
+###combine together the CS and GMEP data
+col_id <- match(names(GMEP_Soil),names(CS_Soil))
+if(any(is.na(col_id))){
+  all_dat <- rbind(CS_Soil[,na.omit(col_id)],GMEP_Soil[,-which(is.na(col_id))])
+}else{
+  all_dat <- rbind(CS_Soil[,col_id],GMEP_Soil)
+}
+
+all_dat$C_CONC[all_dat$C_CONC==(-9999.999)]=NA
+all_dat$C_CONC[all_dat$C_CONC==(999999)]=NA
+
+### label the type of square as being either CS, wider wales (W) or targeted (T), this will help weight the data accordingly later on
+all_dat$TYPE="CS"
+
+### for the GMEP data we can match up the square numbers in the data set with all the square numbers in all_sqs and pull off the square type
+
+all_dat$TYPE[all_dat$Survey=="GMEP"]=as.character(all_sqs$TYPE[match(all_dat$SERIES_NUM[all_dat$Survey=="GMEP"],all_sqs$SQ_ID)])
+
+##########################
+
+all_dat$year[all_dat$Survey=="GMEP"]=2013.5
+
+##########################
+
+#set contrasts to match thosed as used by SAS for consistency with CS analysis
+options(contrasts = c(factor = "contr.SAS",ordered = "contr.poly"))
+
+##set a year variable to be a factor for use in the statistical model
+all_dat$YR <- as.factor(all_dat$year)
+CSGB_Soil$YR <- as.factor(CSGB_Soil$year)
+
+##seperate data sets into WW data for model and targeted data to add as a mean value to plot
+all_dat_mod=all_dat[all_dat$TYPE!="TG",]
+all_dat_tg=all_dat[all_dat$TYPE=="TG",]
+
+row.names(all_dat_mod) <- 1:nrow(all_dat_mod)
+remna <- which(apply(all_dat_mod,1,function(X){any(is.na(X))}))
+if(length(remna)>0){all_dat_mod=all_dat_mod[-remna,]}
+
+##construct a mixed model accounting for square level random effects, possible correlation effects and different weights
+##not that lme (and all mixed models run in R) needs the grouping levels in the random effects and correlation structure to be the same
+## therefore the finest resolved group (in this case rep_plot) is used in both circumstances.
+
+mod2=lme(C_CONC~YR-1,random=~1|REP_PLOT,data=all_dat_mod,correlation=corAR1(form=~year|REP_PLOT),na.action=na.omit)
+
+##use the fitted model and a Tukey multiple testing correction to find differences between factor levels (in this case Year)
+gg <- glht(mod2,linfct=mcp(YR="Tukey"))
+
+## use the multiple testing to examine significant differences between yearly estimates and output as a neat table with p values
+out_dat_diff <- data.frame(Test=names(summary(gg)$test$coefficients),Est_Diff =(summary(gg)$test$coefficients),P.Value=
+summary(gg)$test$pvalues)
+
+
+## obtain yearly predictions and confidence estimates from the fitted model and store as simple table
+out_dat_pred <- data.frame(Year=as.numeric(as.character(sort(unique(all_dat$YR)))),Estimated_Value =summary(mod2)$tTable[,1],
+Lower_est. = summary(mod2)$tTable[,1]-(1.96*summary(mod2)$tTable[,2]),
+Upper_est. = summary(mod2)$tTable[,1]+(1.96*summary(mod2)$tTable[,2])
+)
+
+
+png(file="FIGURE-GMEP-S-001-A-2.png",width=1600,height=1200)
+
+layout(matrix(c(1,2),ncol=1,nrow=2,byrow=T),widths=c(1),heights=c(1,0.1))
+
+par(mai=c(2.7,3.2,0.5,0.5))
+textgrid=expand.grid(x=seq(1970,2050,by=10),y=seq(0,180,len=5))
+
+##plot the yearly estimates together with the confidence interval as a shaded area
+plot(out_dat_pred$Year,out_dat_pred$Estimated_Value,ylim=c(0,180),xlim=c(-3,3)+range(all_dat_mod$year,na.rm=TRUE),type="n",xlab="Year",ylab="Topsoil Carbon Concentration (g/kg)",cex.axis=4.5,cex.lab=4.5,mgp=c(12,5,0),tcl=-2)
+text(textgrid$x,textgrid$y,"GMEP",cex=4,col="grey",font=2)
+polygon(c(out_dat_pred$Year,rev(out_dat_pred$Year)),c(out_dat_pred$Upper_est.,rev(out_dat_pred$Lower_est.)),border=NA,col=rgb(164,211,238,maxColorValue=255))
+lines(out_dat_pred$Year[3:length(unique(out_dat_pred$Year))],out_dat_pred$Estimated_Value[3:length(unique(out_dat_pred$Year))],lty=2,lwd=8,col=rgb(24,116,205,maxColorValue=255))
+lines(out_dat_pred$Year[1:3],out_dat_pred$Estimated_Value[1:3],lty=1,lwd=8,col=rgb(24,116,205,maxColorValue=255))
+
+points(out_dat_pred$Year,out_dat_pred$Estimated_Value,pch=20,cex=6,col=rgb(24,116,205,maxColorValue=255))
+all_dat_tg=all_dat[all_dat$TYPE=="TG",]
+tg_ests <- tapply(all_dat_tg$C_CONC,all_dat_tg$YR,mean,na.rm=TRUE)
+
+points(as.numeric(names(tg_ests)),tg_ests,pch=15,cex=5,col=rgb(205,0,0,maxColorValue=255))
+
+par(mai=c(0,0,0,0))
+plot(0,0,type="n",xlab="",ylab="",xaxt="n",yaxt="n",bty="n",ylim=c(-0.82,0.8))
+text(0,0,"FIGURE-GMEP-S-001-A-2: Long term trend in topsoil carbon concentration (g/kg) using data from GMEP \nfield survey and Countryside Survey",cex=2.6)
+
+dev.off()
+
+
+
+``` 
+ 
+![FIGURE1](FIGURE-GMEP-S-001-A-2.png) 
+[Enlarge Figure](FIGURE-GMEP-S-001-A-2.png)  
+
+# Data {#data}
+```{r results="asis", echo=FALSE}
+knitr::kable(out_dat_pred,caption="TABLE-GMEP-S001-A2: Topsoil carbon concentrations (g/kg) measured by GMEP in 2013 compared with data collected since 1978 by the COuntryside Survey (CS). THere are no significant differences between years.")
+```
+
+
+# Method {#meth}
+Soil samples are collected each year in plastic sleeves, 15 cm long and 5cm wide. Loss-on-Ignition, (LOI) was measured on a 10 g air dried sub-sample taken after sieving to 2 mm. The sub-sample was dried at 105^o^C for 16 hours to remove moisture, weighed, then combusted at 375^o^C for 16 hours. The cooled sample was then weighed, and the loss-on-ignition (%) calculated. Soil carbon concentration was determined, using a total elemental analyser; the method used was the Centre for Ecology and Hydrology, Lancaster accredited method SOP3102. The LOI values were calibrated to carbon concentration using a multiplication factor of 0.55 determined from the calibration with the total carbon in order to be consistent with Countryside Survey data.
+
+# Trade-offs & Co-benefits {#coben}
+One of the powers of the Glastir monitoring is that it helps relate soil carbon stocks to vegetation, habitat and other environmental data allowing easier assessment, and potentially better targeting of land-management activities aimed at mitigating greenhouse gas emissions. The data provided by this survey contributes to the knowledge of how soil carbon is changing, how this relates to vegetation change and land use and management and provides evidence of the effectiveness of soil protection legislation in Wales. There is generally a trade-off between maintaining high levels of soil organic carbon (SOC) and productivity. The most carbon is stored in peat bogs which are low productivity systems, whereas the least amount of SOC is stored in arable mineral soils which are continually ploughed and cropped. Fens are perhaps the exception to this being high in carbon and productivity, having been drained; but we are losing carbon from these soils. Maintaining healthy levels of soil organic matter can provide an economic buffer against market price spikes, for example against fuel and fertiliser costs in some agri-ecosystems. The soil organic matter acts as a nutrient reserve that can be accessed at times when prices are high and rebuilt in between. 
+
+See [here](https://gmep.wales/soil/nationaltrend/S017) for trends in  Phosporus and [here](https://gmep.wales/soil/nationaltrend/S007) for trends in topsoil pH. 
