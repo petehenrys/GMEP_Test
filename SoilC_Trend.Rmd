@@ -4,8 +4,8 @@ author: "Pete Henrys"
 date: "25 April 2016"
 output: html_document
 params:
-  pwdCS:  "Provide_MASQ_password"
-  pwdGMEP:  "Provide_GMEP_password"
+  pwdCS: Provide_MASQ_password
+  pwdGMEP: Provide_GMEP_password
 ---
 
 ```{r setup, include=FALSE}
